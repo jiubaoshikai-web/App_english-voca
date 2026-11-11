@@ -4,6 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>英単語帳</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#6c4bd8">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="英単語帳">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
 <style>
 :root{--bg:#f6f7fb;--card:#fff;--fg:#1f2430;--sub:#6b7280;--accent:#6c4bd8;--ok:#16a34a;--ng:#dc2626;--line:#e5e7eb}
 @media (prefers-color-scheme:dark){:root{--bg:#14161c;--card:#1e222b;--fg:#e8eaf0;--sub:#9aa3b2;--accent:#9b82f5;--line:#2c313c}}
@@ -35,6 +41,9 @@ button.btn:disabled{opacity:.5}
 #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#222;color:#fff;padding:10px 16px;border-radius:8px;opacity:0;transition:.3s;pointer-events:none;max-width:90%}
 #toast.show{opacity:1}
 .hidden{display:none}
+.opt{display:block;width:100%;text-align:left;margin:6px 0;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg);font-size:16px;cursor:pointer}
+.opt.right{background:var(--ok);border-color:var(--ok);color:#fff}
+.opt.wrong{background:var(--ng);border-color:var(--ng);color:#fff}
 </style>
 </head>
 <body>
@@ -42,6 +51,7 @@ button.btn:disabled{opacity:.5}
 <nav id="tabs">
   <button data-t="add" class="on">追加</button>
   <button data-t="study">学習</button>
+  <button data-t="quiz">クイズ</button>
   <button data-t="list">単語一覧</button>
   <button data-t="settings">設定</button>
 </nav>
@@ -76,6 +86,10 @@ button.btn:disabled{opacity:.5}
 
   <section id="t-study" class="hidden">
     <div id="studyBox"></div>
+  </section>
+
+  <section id="t-quiz" class="hidden">
+    <div id="quizBox"></div>
   </section>
 
   <section id="t-list" class="hidden">
@@ -255,6 +269,79 @@ function grade(ok){
   save(); shown = false; renderStudy();
 }
 
+
+// ---------- クイズ（4択 / スペル） ----------
+let Q = null;
+const shuffle = a => { a = [...a]; for(let i = a.length-1; i > 0; i--){ const j = Math.floor(Math.random()*(i+1)); [a[i],a[j]] = [a[j],a[i]]; } return a; };
+const quizPool = () => S.words.filter(w => w.ja);
+function quizMenu(){
+  Q = null;
+  const n = quizPool().length;
+  $('#quizBox').innerHTML = `<div class="card"><b>クイズ</b><p class="sub">日本語訳のある ${n} 語から10問出題します。間違えた単語は復習対象に戻ります。</p>
+    <div class="row"><button class="btn" data-q="choice" ${n<4?'disabled':''}>4択クイズ</button>
+    <button class="btn" data-q="spell" ${n<1?'disabled':''}>スペルテスト</button></div>
+    ${n<4?'<p class="sub">4択は4語以上登録すると遊べます。</p>':''}</div>`;
+}
+$('#quizBox').onclick = e => {
+  const d = e.target.dataset;
+  if(d.q) startQuiz(d.q);
+  if(d.opt != null && Q && !Q.done) answerChoice(+d.opt);
+  if(d.next) nextQ();
+  if(d.menu) quizMenu();
+  if(d.check) checkSpell();
+};
+$('#quizBox').addEventListener('keydown', e => {
+  if(e.key === 'Enter' && e.target.id === 'spellIn'){ Q.done ? nextQ() : checkSpell(); }
+});
+function startQuiz(mode){
+  Q = {mode, qs: shuffle(quizPool()).slice(0, 10), i: 0, score: 0, done: false};
+  renderQ();
+}
+function renderQ(){
+  if(Q.i >= Q.qs.length){
+    $('#quizBox').innerHTML = `<div class="card flash" style="cursor:default"><div class="big">${Q.score} / ${Q.qs.length}</div><p>${Q.score===Q.qs.length?'完璧よ！':Q.score>=Q.qs.length*0.7?'なかなかやるじゃない':'復習しなさい'}</p>
+      <div class="row"><button class="btn" data-q="${Q.mode}">もう一度</button><button class="btn sec" data-menu="1">メニュー</button></div></div>`;
+    return;
+  }
+  const w = Q.qs[Q.i]; Q.done = false;
+  const head = `<p class="sub">${Q.i+1} / ${Q.qs.length}　正解 ${Q.score}</p>`;
+  if(Q.mode === 'choice'){
+    const others = shuffle(quizPool().filter(x => x.word !== w.word && x.ja !== w.ja)).slice(0, 3);
+    Q.opts = shuffle([w, ...others]);
+    $('#quizBox').innerHTML = head + `<div class="card"><div class="big" style="font-size:30px;font-weight:700">${esc(w.word)} <button class="del" data-say="${esc(w.word)}" onclick="say('${esc(w.word)}')">🔊</button></div>
+      <div class="sub">${esc(w.phonetic)}</div>${Q.opts.map((o,i) => `<button class="opt" data-opt="${i}">${esc(o.ja)}</button>`).join('')}<div id="fb"></div></div>`;
+  }else{
+    const hint = w.word[0] + ' ' + '_ '.repeat(w.word.length - 1);
+    $('#quizBox').innerHTML = head + `<div class="card"><div style="font-size:26px;font-weight:700">${esc(w.ja)} <span class="tag">${esc(w.pos)}</span></div>
+      <div class="sub">${esc(w.def)}</div><p class="sub" style="letter-spacing:2px">${hint} (${w.word.length}文字)</p>
+      <div class="row"><input type="text" id="spellIn" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="英語で入力"><button class="btn" data-check="1">答える</button></div><div id="fb"></div></div>`;
+    $('#spellIn').focus();
+  }
+}
+function finishQ(ok, w){
+  Q.done = true; if(ok) Q.score++;
+  else { w.box = 0; w.due = today(); }
+  save();
+  $('#fb').innerHTML = `<p>${ok ? '✅ 正解！' : '❌ 正解は <b>' + esc(w.word) + '</b>'}</p><button class="btn" data-next="1">${Q.i+1 >= Q.qs.length ? '結果を見る' : '次へ'}</button>`;
+  if(!ok || Q.mode === 'spell') say(w.word);
+}
+function answerChoice(i){
+  const w = Q.qs[Q.i], picked = Q.opts[i], ok = picked.word === w.word;
+  document.querySelectorAll('.opt').forEach((b, k) => {
+    b.disabled = true;
+    if(Q.opts[k].word === w.word) b.classList.add('right');
+    else if(k === i) b.classList.add('wrong');
+  });
+  finishQ(ok, w);
+}
+function checkSpell(){
+  const w = Q.qs[Q.i], v = $('#spellIn').value.trim().toLowerCase();
+  if(!v) return;
+  $('#spellIn').disabled = true;
+  finishQ(v === w.word, w);
+}
+function nextQ(){ Q.i++; renderQ(); }
+
 // ---------- 設定 ----------
 $('#autoDaily').onchange = e => { S.settings.autoDaily = e.target.checked; save(); };
 $('#dailyN').onchange = e => { S.settings.dailyN = Math.max(1, Math.min(30, +e.target.value || 5)); save(); };
@@ -280,12 +367,14 @@ $('#resetBtn').onclick = () => { if(confirm('すべての単語を削除しま�
 $('#tabs').onclick = e => {
   const t = e.target.dataset.t; if(!t) return;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b === e.target));
-  ['add','study','list','settings'].forEach(k => $('#t-'+k).classList.toggle('hidden', k !== t));
+  ['add','study','quiz','list','settings'].forEach(k => $('#t-'+k).classList.toggle('hidden', k !== t));
   if(t === 'study'){ shown = false; renderStudy(); }
   if(t === 'list') renderList();
+  if(t === 'quiz') quizMenu();
 };
 
 // ---------- 起動 ----------
+if('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(()=>{});
 $('#autoDaily').checked = S.settings.autoDaily;
 $('#dailyN').value = S.settings.dailyN;
 renderList();

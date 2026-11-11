@@ -153,6 +153,7 @@ function pickDef(entries){
   }
   return {...(withEx || first || {pos:'', def:'', example:''}), phonetic: phon};
 }
+let lastExError = ''; // 直近のTatoebaエラー内容（画面表示用）
 // Tatoeba から例文を探す。戻り値: {example, exJa} / null（該当なし）。通信失敗は例外
 const TATOEBA = 'https://tatoeba.org/en/api_v0/search?orphans=no&unapproved=no&sort=relevance&from=eng&query=';
 function exampleRegex(word){
@@ -163,7 +164,7 @@ const bestLen = c => c.sort((a,b) => Math.abs(a.example.length - 55) - Math.abs(
 async function tatoebaExample(word){
   const re = exampleRegex(word), q = encodeURIComponent(word);
   // 1) 日本語訳つきの例文
-  const d = await getJSON(TATOEBA + q + '&to=jpn&trans_filter=limit');
+  const d = await getJSON(TATOEBA + q + '&to=jpn&trans_filter=limit', 15000);
   const c1 = [];
   for(const r of d.results || []){
     if(!re.test(r.text || '')) continue;
@@ -172,7 +173,7 @@ async function tatoebaExample(word){
   }
   if(c1.length) return bestLen(c1);
   // 2) 英語だけの例文 + 日本語訳は MyMemory で機械翻訳
-  const d2 = await getJSON(TATOEBA + q);
+  const d2 = await getJSON(TATOEBA + q, 15000);
   const c2 = (d2.results || []).filter(r => re.test(r.text || '')).map(r => ({example: r.text, exJa: ''}));
   const ex = bestLen(c2);
   if(!ex) return null;
@@ -195,7 +196,7 @@ async function lookup(word){
   }
   if(!out.example){ // 例文が無ければ Tatoeba で補う
     try{ const ex = await tatoebaExample(word); if(ex){ Object.assign(out, ex); out.exStatus = 'ok'; } else out.exStatus = 'none'; }
-    catch(e){ out.exStatus = 'error'; }
+    catch(e){ out.exStatus = 'error'; lastExError = typeof e === 'number' ? 'HTTP ' + e : (e && e.name || 'Error') + (e && e.message ? ': ' + e.message : ''); }
   }
   out.found = !!(out.def || out.ja);
   return out;
@@ -300,13 +301,13 @@ $('#refillAll').onclick = async () => {
     b.textContent = `補完中… ${i+1}/${todo.length}`;
     cnt[await refill(todo[i])]++;
   }
-  toast(`補完${cnt.ok}語 / 該当なし${cnt.none}語 / 通信エラー${cnt.error}語`); renderList();
+  toast(`補完${cnt.ok}語 / 該当なし${cnt.none}語 / 通信エラー${cnt.error}語` + (cnt.error ? `（${lastExError}）` : '')); renderList();
 };
 $('#listBox').onclick = e => {
   if(e.target.dataset.say) say(e.target.dataset.say);
   if(e.target.dataset.fill){
     const w = S.words.find(x => x.word === e.target.dataset.fill); e.target.textContent = '⏳';
-    refill(w).then(st => { toast(st === 'ok' ? '補完しました' : '例文なし：' + reason[st]); renderList(); });
+    refill(w).then(st => { toast(st === 'ok' ? '補完しました' : '例文なし：' + reason[st] + (st === 'error' ? `（${lastExError}）` : '')); renderList(); });
   }
   if(e.target.dataset.del){ S.words = S.words.filter(w => w.word !== e.target.dataset.del); save(); renderList(); }
 };

@@ -140,61 +140,21 @@ async function getJSON(url, ms = 7000){
   try{ const r = await fetch(url, {signal: c.signal}); if(!r.ok) throw r.status; return await r.json(); }
   finally{ clearTimeout(t); }
 }
-// 例文つき定義を優先して選ぶ（無ければ最初の定義）
+// 定義の多い品詞（＝主な意味）を選び、その中で例文つきの定義を優先する
 function pickDef(entries){
-  let first = null, withEx = null, phon = '';
+  let phon = '', best = null;
   for(const e of entries || []){
     phon = phon || e.phonetic || (e.phonetics || []).find(p => p.text)?.text || '';
-    for(const m of e.meanings || []) for(const d of m.definitions || []){
-      const c = {pos: m.partOfSpeech || '', def: d.definition || '', example: d.example || ''};
-      if(!first) first = c;
-      if(!withEx && c.example) withEx = c;
+    for(const m of e.meanings || []){
+      const defs = (m.definitions || []).filter(d => d.definition);
+      if(!defs.length) continue;
+      const score = defs.length + (defs.some(d => d.example) ? 1 : 0);
+      if(!best || score > best.score) best = {score, pos: m.partOfSpeech || '', defs};
     }
   }
-  return {...(withEx || first || {pos:'', def:'', example:''}), phonetic: phon};
-}
-// Tatoeba はブラウザから直接呼べない(CORS)ため、公開プロキシ経由で取得する（送るのは英単語だけ）
-const PROXIES = [
-  ['allorigins', u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u)],
-  ['corsproxy', u => 'https://corsproxy.io/?url=' + encodeURIComponent(u)]
-];
-async function tatoebaGet(url){
-  const errs = [];
-  for(const [name, wrap] of PROXIES){
-    try{ return await getJSON(wrap(url), 15000); }
-    catch(e){ errs.push(name + ': ' + (typeof e === 'number' ? 'HTTP ' + e : (e && e.name === 'AbortError' ? 'timeout' : (e && e.message) || 'error'))); }
-  }
-  throw new Error(errs.join(' / '));
-}
-let lastExError = ''; // 直近のTatoebaエラー内容（画面表示用）
-// Tatoeba から例文を探す。戻り値: {example, exJa} / null（該当なし）。通信失敗は例外
-const TATOEBA = 'https://tatoeba.org/en/api_v0/search?orphans=no&unapproved=no&sort=relevance&from=eng&query=';
-function exampleRegex(word){
-  const stem = word.toLowerCase().replace(/[^a-z-]/g, '').replace(/(e|y)$/, ''); // 活用形も許す
-  return new RegExp('\\b' + stem + '[a-z]{0,5}\\b', 'i');
-}
-const bestLen = c => c.sort((a,b) => Math.abs(a.example.length - 55) - Math.abs(b.example.length - 55))[0] || null;
-async function tatoebaExample(word){
-  const re = exampleRegex(word), q = encodeURIComponent(word);
-  // 1) 日本語訳つきの例文
-  const d = await tatoebaGet(TATOEBA + q + '&to=jpn&trans_filter=limit');
-  const c1 = [];
-  for(const r of d.results || []){
-    if(!re.test(r.text || '')) continue;
-    const ja = (r.translations || []).flat().find(t => t && t.lang === 'jpn');
-    if(ja && ja.text) c1.push({example: r.text, exJa: ja.text});
-  }
-  if(c1.length) return bestLen(c1);
-  // 2) 英語だけの例文 + 日本語訳は MyMemory で機械翻訳
-  const d2 = await tatoebaGet(TATOEBA + q);
-  const c2 = (d2.results || []).filter(r => re.test(r.text || '')).map(r => ({example: r.text, exJa: ''}));
-  const ex = bestLen(c2);
-  if(!ex) return null;
-  try{
-    const t = await getJSON('https://api.mymemory.translated.net/get?langpair=en|ja&q=' + encodeURIComponent(ex.example));
-    ex.exJa = t?.responseData?.translatedText || '';
-  }catch(e){}
-  return ex;
+  if(!best) return {pos:'', def:'', example:'', phonetic: phon};
+  const d = best.defs.find(d => d.example) || best.defs[0];
+  return {pos: best.pos, def: d.definition, example: d.example || '', phonetic: phon};
 }
 async function lookup(word){
   const out = {word, ja:'', pos:'', def:'', example:'', exJa:'', phonetic:''};
@@ -207,26 +167,21 @@ async function lookup(word){
     const t = tr.value.responseData.translatedText;
     if(t.toLowerCase() !== word.toLowerCase()) out.ja = t;
   }
-  if(!out.example){ // 例文が無ければ Tatoeba で補う
-    try{ const ex = await tatoebaExample(word); if(ex){ Object.assign(out, ex); out.exStatus = 'ok'; } else out.exStatus = 'none'; }
-    catch(e){ out.exStatus = 'error'; lastExError = (e && e.message) || String(e); }
-  }
   out.found = !!(out.def || out.ja);
   return out;
 }
 
-// 不足している項目だけ取得し直して補完する
+// 辞書情報が足りない単語を取得し直して補完する
 async function refill(w){
   const info = await lookup(w.word);
-  if(!w.example && info.example){ // 例文つきの定義に差し替える
-    w.example = info.example; w.exJa = info.exJa || ''; if(info.def){ w.def = info.def; w.pos = info.pos || w.pos; }
+  if(!w.example && info.example && info.def){ // 例文つきの定義に差し替える
+    w.example = info.example; w.def = info.def; w.pos = info.pos || w.pos;
   }
   for(const k of ['ja','def','pos','phonetic']) if(!w[k] && info[k]) w[k] = info[k];
   save();
-  return w.example ? 'ok' : (info.exStatus || 'none');
+  return w.def ? 'ok' : 'none';
 }
-const reason = {ok:'補完', none:'該当なし', error:'通信エラー'};
-const lacking = () => S.words.filter(w => !w.example);
+const lacking = () => S.words.filter(w => !w.def);
 
 async function addWords(list, {silent} = {}){
   const have = new Set(S.words.map(w => w.word));
@@ -295,7 +250,7 @@ function renderList(){
   const items = S.words.filter(w => !q || w.word.includes(q) || (w.ja||'').includes(q));
   $('#count').textContent = `${items.length} / ${S.words.length} 語`;
   const n = lacking().length, ra = $('#refillAll');
-  ra.textContent = `情報が足りない単語を補完（${n}語）`; ra.disabled = !n;
+  ra.textContent = `辞書情報が足りない単語を再取得（${n}語）`; ra.disabled = !n;
   $('#listBox').innerHTML = items.map(w => `
     <div class="card"><div class="word"><div>
       <h3>${esc(w.word)} <span class="sub">${esc(w.phonetic)}</span><span class="tag">${esc(w.pos)}</span></h3>
@@ -309,18 +264,18 @@ function renderList(){
 $('#search').oninput = renderList;
 $('#refillAll').onclick = async () => {
   const b = $('#refillAll'); b.disabled = true;
-  const todo = lacking(), cnt = {ok:0, none:0, error:0};
+  const todo = lacking(), cnt = {ok:0, none:0};
   for(let i = 0; i < todo.length; i++){
-    b.textContent = `補完中… ${i+1}/${todo.length}`;
+    b.textContent = `再取得中… ${i+1}/${todo.length}`;
     cnt[await refill(todo[i])]++;
   }
-  toast(`補完${cnt.ok}語 / 該当なし${cnt.none}語 / 通信エラー${cnt.error}語` + (cnt.error ? `（${lastExError}）` : '')); renderList();
+  toast(`再取得${cnt.ok}語 / 見つからず${cnt.none}語`); renderList();
 };
 $('#listBox').onclick = e => {
   if(e.target.dataset.say) say(e.target.dataset.say);
   if(e.target.dataset.fill){
     const w = S.words.find(x => x.word === e.target.dataset.fill); e.target.textContent = '⏳';
-    refill(w).then(st => { toast(st === 'ok' ? '補完しました' : '例文なし：' + reason[st] + (st === 'error' ? `（${lastExError}）` : '')); renderList(); });
+    refill(w).then(st => { toast(st === 'ok' ? '取得しました' : '辞書に見つかりませんでした'); renderList(); });
   }
   if(e.target.dataset.del){ S.words = S.words.filter(w => w.word !== e.target.dataset.del); save(); renderList(); }
 };

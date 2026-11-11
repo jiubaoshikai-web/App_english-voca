@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>英単語帳</title>
+<style>
+:root{--bg:#f6f7fb;--card:#fff;--fg:#1f2430;--sub:#6b7280;--accent:#6c4bd8;--ok:#16a34a;--ng:#dc2626;--line:#e5e7eb}
+@media (prefers-color-scheme:dark){:root{--bg:#14161c;--card:#1e222b;--fg:#e8eaf0;--sub:#9aa3b2;--accent:#9b82f5;--line:#2c313c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;line-height:1.5}
+header{padding:16px;text-align:center;font-weight:700;font-size:20px}
+nav{display:flex;gap:4px;max-width:720px;margin:0 auto;padding:0 16px}
+nav button{flex:1;padding:10px;border:0;background:transparent;color:var(--sub);font-size:15px;border-bottom:3px solid transparent;cursor:pointer}
+nav button.on{color:var(--accent);border-color:var(--accent);font-weight:700}
+main{max-width:720px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:12px}
+input[type=text],textarea,input[type=number]{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font-size:16px}
+textarea{min-height:120px}
+button.btn{padding:10px 16px;border:0;border-radius:8px;background:var(--accent);color:#fff;font-size:15px;cursor:pointer}
+button.btn.sec{background:var(--line);color:var(--fg)}
+button.btn:disabled{opacity:.5}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.row>input[type=text]{flex:1;min-width:140px}
+.sub{color:var(--sub);font-size:13px}
+.word{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.word h3{margin:0;font-size:18px}
+.tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:99px;background:var(--line);color:var(--sub);margin-left:6px}
+.del{background:none;border:0;color:var(--sub);cursor:pointer;font-size:18px}
+.flash{min-height:220px;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;cursor:pointer;user-select:none}
+.flash .big{font-size:34px;font-weight:700}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.chip{padding:4px 10px;border-radius:99px;border:1px solid var(--line);cursor:pointer;font-size:14px}
+.chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#222;color:#fff;padding:10px 16px;border-radius:8px;opacity:0;transition:.3s;pointer-events:none;max-width:90%}
+#toast.show{opacity:1}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header>📚 英単語帳</header>
+<nav id="tabs">
+  <button data-t="add" class="on">追加</button>
+  <button data-t="study">学習</button>
+  <button data-t="list">単語一覧</button>
+  <button data-t="settings">設定</button>
+</nav>
+<main>
+  <section id="t-add">
+    <div class="card">
+      <b>単語を入力して自動追加</b>
+      <p class="sub">英単語だけ入れれば、意味・発音・例文を自動で取得します（複数はカンマ・改行区切り）。</p>
+      <div class="row">
+        <input type="text" id="wordIn" placeholder="例: resilient, ubiquitous" autocomplete="off">
+        <button class="btn" id="addBtn">追加</button>
+      </div>
+    </div>
+    <div class="card">
+      <b>英文から単語を抽出</b>
+      <p class="sub">記事や歌詞などを貼り付けると、知らなそうな単語を抽出します。</p>
+      <textarea id="textIn" placeholder="英文を貼り付け"></textarea>
+      <div class="row" style="margin-top:8px"><button class="btn sec" id="extractBtn">単語を抽出</button></div>
+      <div id="extractOut" class="hidden">
+        <div class="chips" id="chips"></div>
+        <div class="row"><button class="btn" id="addSelBtn">選択した単語を追加</button>
+        <button class="btn sec" id="selAllBtn">全選択/解除</button></div>
+      </div>
+    </div>
+    <div class="card">
+      <b>おまかせ追加</b>
+      <p class="sub">内蔵の単語リストから、まだ登録していない単語を追加します。</p>
+      <div class="row"><button class="btn" id="randBtn">今すぐ5語追加</button></div>
+    </div>
+    <div id="progress" class="sub"></div>
+  </section>
+
+  <section id="t-study" class="hidden">
+    <div id="studyBox"></div>
+  </section>
+
+  <section id="t-list" class="hidden">
+    <input type="text" id="search" placeholder="検索">
+    <p class="sub" id="count"></p>
+    <div id="listBox"></div>
+  </section>
+
+  <section id="t-settings" class="hidden">
+    <div class="card">
+      <label class="row"><input type="checkbox" id="autoDaily"> 毎日自動で単語を追加する</label>
+      <div class="row" style="margin-top:8px">1日の追加数 <input type="number" id="dailyN" min="1" max="30" style="width:80px"></div>
+      <p class="sub">アプリを開いたとき、その日の分がまだなら内蔵リストから自動で追加します。</p>
+    </div>
+    <div class="card">
+      <div class="row">
+        <button class="btn sec" id="exportBtn">エクスポート</button>
+        <button class="btn sec" id="importBtn">インポート</button>
+        <button class="btn sec" id="resetBtn">全削除</button>
+      </div>
+      <input type="file" id="file" accept="application/json" class="hidden">
+    </div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+// ---------- 内蔵単語リスト（おまかせ/毎日追加用） ----------
+const BUILTIN = `abandon abstract accomplish accurate acquire adequate advocate aggressive allocate ambiguous analyze anticipate apparent appreciate approach appropriate arbitrary aspect assess assume attain attitude authentic awareness bargain barrier beneficial boundary brief capable cautious challenge circumstance clarify coincide collaborate commit compensate complex comprehensive conceive concentrate conclude conduct consequence considerable consistent constitute constrain contemporary contradict contribute controversy convenient convince cooperate crucial cultivate decline dedicate define demonstrate depict derive deteriorate devote diminish discipline discriminate distinct diverse dominate drastic dynamic efficient eliminate embrace emerge emphasize enable encounter endure enhance enormous ensure enthusiasm environment essential establish estimate evaluate evident evolve exaggerate exceed exclude exhibit expand explicit exploit expose facilitate factor flexible fluctuate fundamental generate genuine gradual guarantee hesitate hypothesis identical illustrate immense implement imply inevitable infer influence inherent initiate innovate insight integrate intense interpret intervene invest isolate justify keen legitimate maintain manipulate mature modify monitor motivate negotiate neglect obstacle obtain obvious occupy occur odd outcome overcome overwhelm participate perceive persist perspective phenomenon potential practical precise predict prevail priority procedure profound prohibit promote proportion pursue radical rational reconcile reduce reflect reluctant rely remarkable replace represent require resemble resolve restrain reveal reverse rigid scarce scrutiny secure sensible significant sophisticated spontaneous stable stimulate strategy submit substantial subtle sufficient suppress sustain tackle tend thrive tolerate transform transparent trivial ultimate undergo urge utilize vague valid vary verify vital vivid vulnerable widespread withdraw`.split(/\s+/);
+
+const STOP = new Set(`the a an and or but if then else when while of at by for with about against between into through during before after above below to from up down in out on off over under again further once here there all any both each few more most other some such no nor not only own same so than too very can will just don should now is are was were be been being have has had having do does did doing i me my we our you your he him his she her it its they them their what which who whom this that these those am would could might must shall may also as because until how why where yes however although though yet still already ever even much many one two three first last next new old good great little back well way want say said get got make made know take come see look use find give tell work call try ask need feel become leave put mean keep let begin seem help show hear play run move live believe hold bring happen write provide sit stand lose pay meet include continue set learn change lead understand watch follow stop create speak read allow add spend grow open walk win offer remember love consider appear buy wait serve die send expect build stay fall cut reach kill remain`.split(/\s+/));
+
+// ---------- 状態 ----------
+const KEY = 'voca.v1';
+const defaults = {words: [], settings: {autoDaily: true, dailyN: 5, lastDaily: ''}};
+let S = load();
+function load(){ try{ const d = JSON.parse(localStorage.getItem(KEY)); if(d) return {...defaults, ...d, settings:{...defaults.settings, ...d.settings}}; }catch(e){} return structuredClone(defaults); }
+function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){ toast('保存に失敗しました'); } }
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const today = () => new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD
+function toast(m){ const t=$('#toast'); t.textContent=m; t.classList.add('show'); clearTimeout(toast.h); toast.h=setTimeout(()=>t.classList.remove('show'),2500); }
+
+// ---------- 自動取得（辞書 + 日本語訳） ----------
+async function lookup(word){
+  const out = {word, ja:'', pos:'', def:'', example:'', phonetic:''};
+  const [dict, tr] = await Promise.allSettled([
+    fetch('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word)).then(r => r.ok ? r.json() : Promise.reject(r.status)),
+    fetch('https://api.mymemory.translated.net/get?langpair=en|ja&q=' + encodeURIComponent(word)).then(r => r.json())
+  ]);
+  if(dict.status === 'fulfilled' && Array.isArray(dict.value) && dict.value[0]){
+    const e = dict.value[0];
+    out.phonetic = e.phonetic || (e.phonetics.find(p => p.text) || {}).text || '';
+    for(const m of e.meanings || []){
+      for(const d of m.definitions || []){
+        if(!out.def){ out.pos = m.partOfSpeech; out.def = d.definition; }
+        if(!out.example && d.example) out.example = d.example;
+      }
+    }
+  }
+  if(tr.status === 'fulfilled' && tr.value?.responseData?.translatedText){
+    const t = tr.value.responseData.translatedText;
+    if(t.toLowerCase() !== word.toLowerCase()) out.ja = t;
+  }
+  out.found = !!(out.def || out.ja);
+  return out;
+}
+
+async function addWords(list, {silent} = {}){
+  const have = new Set(S.words.map(w => w.word));
+  const todo = [...new Set(list.map(w => w.trim().toLowerCase()).filter(w => /^[a-z][a-z'-]*$/.test(w)))].filter(w => !have.has(w));
+  if(!todo.length){ if(!silent) toast('追加できる新しい単語がありません'); return 0; }
+  let added = 0, miss = 0;
+  for(let i = 0; i < todo.length; i++){
+    $('#progress').textContent = `取得中… ${i+1}/${todo.length} (${todo[i]})`;
+    const info = await lookup(todo[i]);
+    if(!info.found){ miss++; continue; }
+    S.words.unshift({...info, added: today(), box: 0, due: today(), seen: 0});
+    added++; save(); renderList();
+  }
+  $('#progress').textContent = '';
+  if(!silent) toast(`${added}語を追加しました` + (miss ? `（${miss}語は見つかりませんでした）` : ''));
+  return added;
+}
+
+// ---------- 追加タブ ----------
+$('#addBtn').onclick = async () => {
+  const b = $('#addBtn'); b.disabled = true;
+  await addWords($('#wordIn').value.split(/[\s,，、]+/));
+  $('#wordIn').value = ''; b.disabled = false;
+};
+$('#wordIn').addEventListener('keydown', e => { if(e.key === 'Enter') $('#addBtn').click(); });
+
+let extracted = [];
+$('#extractBtn').onclick = () => {
+  const have = new Set(S.words.map(w => w.word));
+  const freq = {};
+  for(const m of $('#textIn').value.toLowerCase().match(/[a-z][a-z'-]{3,}/g) || []){
+    const w = m.replace(/^['-]+|['-]+$/g, '').replace(/'s$/, '');
+    if(w.length < 4 || STOP.has(w) || have.has(w)) continue;
+    freq[w] = (freq[w] || 0) + 1;
+  }
+  extracted = Object.keys(freq).sort((a,b) => freq[b]-freq[a]).map(w => ({w, on:true}));
+  $('#extractOut').classList.toggle('hidden', !extracted.length);
+  if(!extracted.length) toast('抽出できる単語がありませんでした');
+  renderChips();
+};
+function renderChips(){
+  $('#chips').innerHTML = extracted.map((x,i) => `<span class="chip ${x.on?'on':''}" data-i="${i}">${esc(x.w)}</span>`).join('');
+}
+$('#chips').onclick = e => { const i = e.target.dataset.i; if(i != null){ extracted[i].on = !extracted[i].on; renderChips(); } };
+$('#selAllBtn').onclick = () => { const v = !extracted.every(x => x.on); extracted.forEach(x => x.on = v); renderChips(); };
+$('#addSelBtn').onclick = async () => {
+  const b = $('#addSelBtn'); b.disabled = true;
+  await addWords(extracted.filter(x => x.on).map(x => x.w));
+  extracted = []; renderChips(); $('#extractOut').classList.add('hidden'); b.disabled = false;
+};
+
+async function addRandom(n){
+  const have = new Set(S.words.map(w => w.word));
+  const pool = BUILTIN.filter(w => !have.has(w));
+  for(let i = pool.length - 1; i > 0; i--){ const j = Math.floor(Math.random()*(i+1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+  return addWords(pool.slice(0, n + 3).slice(0, n), {silent:true});
+}
+$('#randBtn').onclick = async () => {
+  const b = $('#randBtn'); b.disabled = true;
+  const n = await addRandom(5); toast(n ? `${n}語を追加しました` : '追加できる単語がありません'); b.disabled = false;
+};
+
+// ---------- 一覧 ----------
+function renderList(){
+  const q = $('#search').value.trim().toLowerCase();
+  const items = S.words.filter(w => !q || w.word.includes(q) || (w.ja||'').includes(q));
+  $('#count').textContent = `${items.length} / ${S.words.length} 語`;
+  $('#listBox').innerHTML = items.map(w => `
+    <div class="card"><div class="word"><div>
+      <h3>${esc(w.word)} <span class="sub">${esc(w.phonetic)}</span><span class="tag">${esc(w.pos)}</span></h3>
+      <div>${esc(w.ja)}</div>
+      <div class="sub">${esc(w.def)}</div>
+      ${w.example ? `<div class="sub"><i>“${esc(w.example)}”</i></div>` : ''}
+    </div>
+    <div><button class="del" data-say="${esc(w.word)}" title="発音">🔊</button><button class="del" data-del="${esc(w.word)}" title="削除">✕</button></div></div></div>`).join('')
+    || '<p class="sub">まだ単語がありません。「追加」タブから登録しましょう。</p>';
+}
+$('#search').oninput = renderList;
+$('#listBox').onclick = e => {
+  if(e.target.dataset.say) say(e.target.dataset.say);
+  if(e.target.dataset.del){ S.words = S.words.filter(w => w.word !== e.target.dataset.del); save(); renderList(); }
+};
+function say(t){ try{ const u = new SpeechSynthesisUtterance(t); u.lang = 'en-US'; speechSynthesis.cancel(); speechSynthesis.speak(u); }catch(e){} }
+
+// ---------- 学習（ライトナー式の簡易間隔反復） ----------
+const INTERVALS = [0, 1, 3, 7, 14, 30];
+let cur = null, shown = false;
+function nextDue(){ const t = today(); return S.words.filter(w => w.due <= t).sort((a,b) => a.due.localeCompare(b.due) || a.box - b.box)[0]; }
+function renderStudy(){
+  cur = nextDue();
+  const box = $('#studyBox');
+  if(!S.words.length){ box.innerHTML = '<div class="card">単語がありません。先に追加してください。</div>'; return; }
+  if(!cur){ box.innerHTML = '<div class="card">🎉 今日の復習は完了です！</div>'; return; }
+  const due = S.words.filter(w => w.due <= today()).length;
+  box.innerHTML = `<p class="sub">今日の残り ${due} 語</p>
+    <div class="card flash" id="flash">${shown ? back(cur) : `<div class="big">${esc(cur.word)}</div><div class="sub">${esc(cur.phonetic)}</div><div class="sub" style="margin-top:12px">タップして答えを見る</div>`}</div>
+    <div class="row ${shown?'':'hidden'}" style="justify-content:center"><button class="btn sec" id="ng">もう一度</button><button class="btn" id="ok">覚えた</button></div>`;
+  $('#flash').onclick = () => { if(!shown){ shown = true; say(cur.word); renderStudy(); } };
+  if(shown){ $('#ok').onclick = () => grade(true); $('#ng').onclick = () => grade(false); }
+}
+function back(w){ return `<div class="big">${esc(w.ja || w.word)}</div><div class="sub">${esc(w.word)} ${esc(w.phonetic)} <span class="tag">${esc(w.pos)}</span></div><div style="margin-top:8px">${esc(w.def)}</div>${w.example?`<div class="sub"><i>“${esc(w.example)}”</i></div>`:''}`; }
+function grade(ok){
+  cur.seen++;
+  cur.box = ok ? Math.min(cur.box + 1, INTERVALS.length - 1) : 0;
+  const d = new Date(); d.setDate(d.getDate() + INTERVALS[cur.box]);
+  cur.due = ok ? d.toLocaleDateString('sv-SE') : today();
+  if(!ok){ // 同じ単語がすぐ戻らないよう末尾へ
+    S.words = S.words.filter(w => w !== cur); S.words.push(cur);
+  }
+  save(); shown = false; renderStudy();
+}
+
+// ---------- 設定 ----------
+$('#autoDaily').onchange = e => { S.settings.autoDaily = e.target.checked; save(); };
+$('#dailyN').onchange = e => { S.settings.dailyN = Math.max(1, Math.min(30, +e.target.value || 5)); save(); };
+$('#exportBtn').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(S, null, 2)], {type:'application/json'}));
+  a.download = 'vocab.json'; a.click();
+};
+$('#importBtn').onclick = () => $('#file').click();
+$('#file').onchange = async e => {
+  try{
+    const d = JSON.parse(await e.target.files[0].text());
+    if(!Array.isArray(d.words)) throw 0;
+    const have = new Set(S.words.map(w => w.word));
+    S.words.push(...d.words.filter(w => w && w.word && !have.has(w.word)));
+    save(); renderList(); toast('インポートしました');
+  }catch(_){ toast('読み込めないファイルです'); }
+  e.target.value = '';
+};
+$('#resetBtn').onclick = () => { if(confirm('すべての単語を削除しますか？')){ S.words = []; save(); renderList(); } };
+
+// ---------- タブ ----------
+$('#tabs').onclick = e => {
+  const t = e.target.dataset.t; if(!t) return;
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b === e.target));
+  ['add','study','list','settings'].forEach(k => $('#t-'+k).classList.toggle('hidden', k !== t));
+  if(t === 'study'){ shown = false; renderStudy(); }
+  if(t === 'list') renderList();
+};
+
+// ---------- 起動 ----------
+$('#autoDaily').checked = S.settings.autoDaily;
+$('#dailyN').value = S.settings.dailyN;
+renderList();
+(async () => {
+  if(S.settings.autoDaily && S.settings.lastDaily !== today()){
+    S.settings.lastDaily = today(); save();
+    const n = await addRandom(S.settings.dailyN);
+    if(n) toast(`今日の新しい単語を${n}語追加しました`);
+  }
+})();
+</script>
+</body>
+</html>

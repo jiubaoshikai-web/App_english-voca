@@ -94,6 +94,7 @@ button.btn:disabled{opacity:.5}
 
   <section id="t-list" class="hidden">
     <input type="text" id="search" placeholder="検索">
+    <div class="row" style="margin-top:8px"><button class="btn sec" id="refillAll"></button></div>
     <p class="sub" id="count"></p>
     <div id="listBox"></div>
   </section>
@@ -134,29 +135,66 @@ const today = () => new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD
 function toast(m){ const t=$('#toast'); t.textContent=m; t.classList.add('show'); clearTimeout(toast.h); toast.h=setTimeout(()=>t.classList.remove('show'),2500); }
 
 // ---------- 自動取得（辞書 + 日本語訳） ----------
-async function lookup(word){
-  const out = {word, ja:'', pos:'', def:'', example:'', phonetic:''};
-  const [dict, tr] = await Promise.allSettled([
-    fetch('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word)).then(r => r.ok ? r.json() : Promise.reject(r.status)),
-    fetch('https://api.mymemory.translated.net/get?langpair=en|ja&q=' + encodeURIComponent(word)).then(r => r.json())
-  ]);
-  if(dict.status === 'fulfilled' && Array.isArray(dict.value) && dict.value[0]){
-    const e = dict.value[0];
-    out.phonetic = e.phonetic || (e.phonetics.find(p => p.text) || {}).text || '';
-    for(const m of e.meanings || []){
-      for(const d of m.definitions || []){
-        if(!out.def){ out.pos = m.partOfSpeech; out.def = d.definition; }
-        if(!out.example && d.example) out.example = d.example;
-      }
+async function getJSON(url, ms = 7000){
+  const c = new AbortController(), t = setTimeout(() => c.abort(), ms);
+  try{ const r = await fetch(url, {signal: c.signal}); if(!r.ok) throw r.status; return await r.json(); }
+  finally{ clearTimeout(t); }
+}
+// 例文つき定義を優先して選ぶ（無ければ最初の定義）
+function pickDef(entries){
+  let first = null, withEx = null, phon = '';
+  for(const e of entries || []){
+    phon = phon || e.phonetic || (e.phonetics || []).find(p => p.text)?.text || '';
+    for(const m of e.meanings || []) for(const d of m.definitions || []){
+      const c = {pos: m.partOfSpeech || '', def: d.definition || '', example: d.example || ''};
+      if(!first) first = c;
+      if(!withEx && c.example) withEx = c;
     }
   }
+  return {...(withEx || first || {pos:'', def:'', example:''}), phonetic: phon};
+}
+// Tatoeba から「英語例文＋日本語訳」を探す
+async function tatoebaExample(word){
+  const d = await getJSON('https://tatoeba.org/en/api_v0/search?from=eng&to=jpn&trans_filter=limit&orphans=no&unapproved=no&sort=relevance&query=' + encodeURIComponent(word));
+  const re = new RegExp('\\b' + word.replace(/[^a-z-]/gi, '') + '[a-z]{0,4}\\b', 'i');
+  const cands = [];
+  for(const r of d.results || []){
+    if(!re.test(r.text || '')) continue;
+    const ja = (r.translations || []).flat().find(t => t && t.lang === 'jpn');
+    if(ja && ja.text) cands.push({example: r.text, exJa: ja.text});
+  }
+  cands.sort((a,b) => Math.abs(a.example.length - 55) - Math.abs(b.example.length - 55));
+  return cands[0] || null;
+}
+async function lookup(word){
+  const out = {word, ja:'', pos:'', def:'', example:'', exJa:'', phonetic:''};
+  const [dict, tr] = await Promise.allSettled([
+    getJSON('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word)),
+    getJSON('https://api.mymemory.translated.net/get?langpair=en|ja&q=' + encodeURIComponent(word))
+  ]);
+  if(dict.status === 'fulfilled' && Array.isArray(dict.value)) Object.assign(out, pickDef(dict.value));
   if(tr.status === 'fulfilled' && tr.value?.responseData?.translatedText){
     const t = tr.value.responseData.translatedText;
     if(t.toLowerCase() !== word.toLowerCase()) out.ja = t;
   }
+  if(!out.example){ // 例文が無ければ Tatoeba で補う
+    try{ const ex = await tatoebaExample(word); if(ex) Object.assign(out, ex); }catch(e){}
+  }
   out.found = !!(out.def || out.ja);
   return out;
 }
+
+// 不足している項目だけ取得し直して補完する
+async function refill(w){
+  const info = await lookup(w.word);
+  if(!w.example && info.example){ // 例文つきの定義に差し替える
+    w.example = info.example; w.exJa = info.exJa || ''; if(info.def){ w.def = info.def; w.pos = info.pos || w.pos; }
+  }
+  for(const k of ['ja','def','pos','phonetic']) if(!w[k] && info[k]) w[k] = info[k];
+  save();
+  return !!w.example;
+}
+const lacking = () => S.words.filter(w => !w.example);
 
 async function addWords(list, {silent} = {}){
   const have = new Set(S.words.map(w => w.word));
@@ -224,19 +262,34 @@ function renderList(){
   const q = $('#search').value.trim().toLowerCase();
   const items = S.words.filter(w => !q || w.word.includes(q) || (w.ja||'').includes(q));
   $('#count').textContent = `${items.length} / ${S.words.length} 語`;
+  const n = lacking().length, ra = $('#refillAll');
+  ra.textContent = `情報が足りない単語を補完（${n}語）`; ra.disabled = !n;
   $('#listBox').innerHTML = items.map(w => `
     <div class="card"><div class="word"><div>
       <h3>${esc(w.word)} <span class="sub">${esc(w.phonetic)}</span><span class="tag">${esc(w.pos)}</span></h3>
       <div>${esc(w.ja)}</div>
       <div class="sub">${esc(w.def)}</div>
-      ${w.example ? `<div class="sub"><i>“${esc(w.example)}”</i></div>` : ''}
+      ${w.example ? `<div class="sub"><i>“${esc(w.example)}”</i>${w.exJa ? '<br>' + esc(w.exJa) : ''}</div>` : ''}
     </div>
-    <div><button class="del" data-say="${esc(w.word)}" title="発音">🔊</button><button class="del" data-del="${esc(w.word)}" title="削除">✕</button></div></div></div>`).join('')
+    <div><button class="del" data-say="${esc(w.word)}" title="発音">🔊</button><button class="del" data-fill="${esc(w.word)}" title="情報を再取得">🔄</button><button class="del" data-del="${esc(w.word)}" title="削除">✕</button></div></div></div>`).join('')
     || '<p class="sub">まだ単語がありません。「追加」タブから登録しましょう。</p>';
 }
 $('#search').oninput = renderList;
+$('#refillAll').onclick = async () => {
+  const b = $('#refillAll'); b.disabled = true;
+  const todo = lacking(); let ok = 0;
+  for(let i = 0; i < todo.length; i++){
+    b.textContent = `補完中… ${i+1}/${todo.length}`;
+    if(await refill(todo[i])) ok++;
+  }
+  toast(`${ok}/${todo.length}語に例文を補いました`); renderList();
+};
 $('#listBox').onclick = e => {
   if(e.target.dataset.say) say(e.target.dataset.say);
+  if(e.target.dataset.fill){
+    const w = S.words.find(x => x.word === e.target.dataset.fill); e.target.textContent = '⏳';
+    refill(w).then(ok => { toast(ok ? '補完しました' : '例文は見つかりませんでした'); renderList(); });
+  }
   if(e.target.dataset.del){ S.words = S.words.filter(w => w.word !== e.target.dataset.del); save(); renderList(); }
 };
 function say(t){ try{ const u = new SpeechSynthesisUtterance(t); u.lang = 'en-US'; speechSynthesis.cancel(); speechSynthesis.speak(u); }catch(e){} }
@@ -257,7 +310,7 @@ function renderStudy(){
   $('#flash').onclick = () => { if(!shown){ shown = true; say(cur.word); renderStudy(); } };
   if(shown){ $('#ok').onclick = () => grade(true); $('#ng').onclick = () => grade(false); }
 }
-function back(w){ return `<div class="big">${esc(w.ja || w.word)}</div><div class="sub">${esc(w.word)} ${esc(w.phonetic)} <span class="tag">${esc(w.pos)}</span></div><div style="margin-top:8px">${esc(w.def)}</div>${w.example?`<div class="sub"><i>“${esc(w.example)}”</i></div>`:''}`; }
+function back(w){ return `<div class="big">${esc(w.ja || w.word)}</div><div class="sub">${esc(w.word)} ${esc(w.phonetic)} <span class="tag">${esc(w.pos)}</span></div><div style="margin-top:8px">${esc(w.def)}</div>${w.example?`<div class="sub"><i>“${esc(w.example)}”</i>${w.exJa?'<br>'+esc(w.exJa):''}</div>`:''}`; }
 function grade(ok){
   cur.seen++;
   cur.box = ok ? Math.min(cur.box + 1, INTERVALS.length - 1) : 0;

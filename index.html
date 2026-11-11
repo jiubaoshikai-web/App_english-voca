@@ -153,18 +153,34 @@ function pickDef(entries){
   }
   return {...(withEx || first || {pos:'', def:'', example:''}), phonetic: phon};
 }
-// Tatoeba から「英語例文＋日本語訳」を探す
+// Tatoeba から例文を探す。戻り値: {example, exJa} / null（該当なし）。通信失敗は例外
+const TATOEBA = 'https://tatoeba.org/en/api_v0/search?orphans=no&unapproved=no&sort=relevance&from=eng&query=';
+function exampleRegex(word){
+  const stem = word.toLowerCase().replace(/[^a-z-]/g, '').replace(/(e|y)$/, ''); // 活用形も許す
+  return new RegExp('\\b' + stem + '[a-z]{0,5}\\b', 'i');
+}
+const bestLen = c => c.sort((a,b) => Math.abs(a.example.length - 55) - Math.abs(b.example.length - 55))[0] || null;
 async function tatoebaExample(word){
-  const d = await getJSON('https://tatoeba.org/en/api_v0/search?from=eng&to=jpn&trans_filter=limit&orphans=no&unapproved=no&sort=relevance&query=' + encodeURIComponent(word));
-  const re = new RegExp('\\b' + word.replace(/[^a-z-]/gi, '') + '[a-z]{0,4}\\b', 'i');
-  const cands = [];
+  const re = exampleRegex(word), q = encodeURIComponent(word);
+  // 1) 日本語訳つきの例文
+  const d = await getJSON(TATOEBA + q + '&to=jpn&trans_filter=limit');
+  const c1 = [];
   for(const r of d.results || []){
     if(!re.test(r.text || '')) continue;
     const ja = (r.translations || []).flat().find(t => t && t.lang === 'jpn');
-    if(ja && ja.text) cands.push({example: r.text, exJa: ja.text});
+    if(ja && ja.text) c1.push({example: r.text, exJa: ja.text});
   }
-  cands.sort((a,b) => Math.abs(a.example.length - 55) - Math.abs(b.example.length - 55));
-  return cands[0] || null;
+  if(c1.length) return bestLen(c1);
+  // 2) 英語だけの例文 + 日本語訳は MyMemory で機械翻訳
+  const d2 = await getJSON(TATOEBA + q);
+  const c2 = (d2.results || []).filter(r => re.test(r.text || '')).map(r => ({example: r.text, exJa: ''}));
+  const ex = bestLen(c2);
+  if(!ex) return null;
+  try{
+    const t = await getJSON('https://api.mymemory.translated.net/get?langpair=en|ja&q=' + encodeURIComponent(ex.example));
+    ex.exJa = t?.responseData?.translatedText || '';
+  }catch(e){}
+  return ex;
 }
 async function lookup(word){
   const out = {word, ja:'', pos:'', def:'', example:'', exJa:'', phonetic:''};
@@ -178,7 +194,8 @@ async function lookup(word){
     if(t.toLowerCase() !== word.toLowerCase()) out.ja = t;
   }
   if(!out.example){ // 例文が無ければ Tatoeba で補う
-    try{ const ex = await tatoebaExample(word); if(ex) Object.assign(out, ex); }catch(e){}
+    try{ const ex = await tatoebaExample(word); if(ex){ Object.assign(out, ex); out.exStatus = 'ok'; } else out.exStatus = 'none'; }
+    catch(e){ out.exStatus = 'error'; }
   }
   out.found = !!(out.def || out.ja);
   return out;
@@ -192,8 +209,9 @@ async function refill(w){
   }
   for(const k of ['ja','def','pos','phonetic']) if(!w[k] && info[k]) w[k] = info[k];
   save();
-  return !!w.example;
+  return w.example ? 'ok' : (info.exStatus || 'none');
 }
+const reason = {ok:'補完', none:'該当なし', error:'通信エラー'};
 const lacking = () => S.words.filter(w => !w.example);
 
 async function addWords(list, {silent} = {}){
@@ -277,18 +295,18 @@ function renderList(){
 $('#search').oninput = renderList;
 $('#refillAll').onclick = async () => {
   const b = $('#refillAll'); b.disabled = true;
-  const todo = lacking(); let ok = 0;
+  const todo = lacking(), cnt = {ok:0, none:0, error:0};
   for(let i = 0; i < todo.length; i++){
     b.textContent = `補完中… ${i+1}/${todo.length}`;
-    if(await refill(todo[i])) ok++;
+    cnt[await refill(todo[i])]++;
   }
-  toast(`${ok}/${todo.length}語に例文を補いました`); renderList();
+  toast(`補完${cnt.ok}語 / 該当なし${cnt.none}語 / 通信エラー${cnt.error}語`); renderList();
 };
 $('#listBox').onclick = e => {
   if(e.target.dataset.say) say(e.target.dataset.say);
   if(e.target.dataset.fill){
     const w = S.words.find(x => x.word === e.target.dataset.fill); e.target.textContent = '⏳';
-    refill(w).then(ok => { toast(ok ? '補完しました' : '例文は見つかりませんでした'); renderList(); });
+    refill(w).then(st => { toast(st === 'ok' ? '補完しました' : '例文なし：' + reason[st]); renderList(); });
   }
   if(e.target.dataset.del){ S.words = S.words.filter(w => w.word !== e.target.dataset.del); save(); renderList(); }
 };

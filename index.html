@@ -41,6 +41,12 @@ button.btn:disabled{opacity:.5}
 #toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#222;color:#fff;padding:10px 16px;border-radius:8px;opacity:0;transition:.3s;pointer-events:none;max-width:90%}
 #toast.show{opacity:1}
 .hidden{display:none}
+.tag.lv1{background:#d1fae5;color:#065f46}.tag.lv2{background:#fef3c7;color:#92400e}.tag.lv3{background:#fee2e2;color:#991b1b}
+#pointBar{max-width:720px;margin:8px auto 0;padding:0 16px}
+.pb{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.track{height:8px;border-radius:99px;background:var(--line);overflow:hidden;margin:4px 0}
+.fill{height:100%;background:var(--accent);transition:width .4s}
+select{padding:2px 4px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font-size:13px}
 .opt{display:block;width:100%;text-align:left;margin:6px 0;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg);font-size:16px;cursor:pointer}
 .opt.right{background:var(--ok);border-color:var(--ok);color:#fff}
 .opt.wrong{background:var(--ng);border-color:var(--ng);color:#fff}
@@ -55,6 +61,7 @@ button.btn:disabled{opacity:.5}
   <button data-t="list">単語一覧</button>
   <button data-t="settings">設定</button>
 </nav>
+<div id="pointBar"></div>
 <main>
   <section id="t-add">
     <div class="card">
@@ -93,6 +100,7 @@ button.btn:disabled{opacity:.5}
   </section>
 
   <section id="t-list" class="hidden">
+    <div id="lvList"></div>
     <input type="text" id="search" placeholder="検索">
     <div class="row" style="margin-top:8px"><button class="btn sec" id="refillAll"></button></div>
     <p class="sub" id="count"></p>
@@ -125,7 +133,7 @@ const STOP = new Set(`the a an and or but if then else when while of at by for w
 
 // ---------- 状態 ----------
 const KEY = 'voca.v1';
-const defaults = {words: [], settings: {autoDaily: true, dailyN: 5, lastDaily: ''}};
+const defaults = {words: [], points: 0, todayPts: {date:'', pts:0}, settings: {autoDaily: true, dailyN: 5, lastDaily: ''}};
 let S = load();
 function load(){ try{ const d = JSON.parse(localStorage.getItem(KEY)); if(d) return {...defaults, ...d, settings:{...defaults.settings, ...d.settings}}; }catch(e){} return structuredClone(defaults); }
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){ toast('保存に失敗しました'); } }
@@ -133,6 +141,42 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const today = () => new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD
 function toast(m){ const t=$('#toast'); t.textContent=m; t.classList.add('show'); clearTimeout(toast.h); toast.h=setTimeout(()=>t.classList.remove('show'),2500); }
+
+// ---------- レベル（初級/中級/上級）とポイント ----------
+const LV_NAME = ['全て', '初級', '中級', '上級'], LV_PT = [0, 10, 20, 30];
+const LV1 = new Set(`abandon accurate approach aspect assume attitude awareness bargain barrier brief capable challenge commit complex concentrate conclude conduct consequence contribute convenient convince cooperate decline define demonstrate efficient eliminate enable encounter enormous environment essential establish estimate expand factor flexible generate guarantee identical influence invest isolate maintain modify monitor motivate obtain obvious occur odd outcome participate potential practical predict priority procedure promote reduce reflect replace represent require reveal reverse secure significant stable strategy submit sufficient tend valid vary vital widespread withdraw`.split(/\s+/));
+const LV3 = new Set(`advocate allocate ambiguous arbitrary attain authentic coincide compensate comprehensive conceive constitute constrain contemporary contradict controversy cultivate depict derive deteriorate devote diminish discriminate dominate drastic embrace endure exaggerate explicit exploit facilitate fluctuate hypothesis implement inevitable infer inherent initiate innovate legitimate manipulate neglect overwhelm perceive phenomenon prevail profound prohibit radical reconcile reluctant restrain rigid scarce scrutiny sophisticated spontaneous subtle suppress sustain transparent trivial ultimate undergo urge utilize vague vivid vulnerable`.split(/\s+/));
+const BSET = new Set(BUILTIN);
+const builtinLevel = w => BSET.has(w) ? (LV1.has(w) ? 1 : LV3.has(w) ? 3 : 2) : null;
+const lvOf = w => w.lv || 2;
+const lvPts = w => LV_PT[lvOf(w)];
+let LVF = 0; // レベルの絞り込み（0=全て）
+const lvTag = w => `<span class="tag lv${lvOf(w)}">${LV_NAME[lvOf(w)]}</span>`;
+function lvChips(){
+  const c = [S.words.length, 0, 0, 0]; S.words.forEach(w => c[lvOf(w)]++);
+  return '<div class="chips">' + LV_NAME.map((n, i) => `<span class="chip ${LVF === i ? 'on' : ''}" data-lv="${i}">${n} ${c[i]}</span>`).join('') + '</div>';
+}
+// 単語の使用頻度（Datamuse）からレベルを推定。取得できなければ null
+async function estimateLevel(word){
+  try{
+    const d = await getJSON('https://api.datamuse.com/words?md=f&max=1&sp=' + encodeURIComponent(word));
+    const f = parseFloat(((d[0] && d[0].tags) || []).find(t => t.startsWith('f:'))?.slice(2));
+    if(!d[0] || d[0].word !== word || isNaN(f)) return null;
+    return f >= 15 ? 1 : f >= 3 ? 2 : 3;
+  }catch(e){ return null; }
+}
+const rank = p => Math.floor(p / 100) + 1;
+function renderPoints(){
+  const p = S.points, pct = p % 100, t = S.todayPts.date === today() ? S.todayPts.pts : 0;
+  $('#pointBar').innerHTML = `<div class="pb"><b>⭐ ${p} pt</b><span><b>Lv ${rank(p)}</b></span><span class="sub">今日 +${t}pt</span></div>
+    <div class="track"><div class="fill" style="width:${pct}%"></div></div><div class="sub" style="text-align:right">次のLvまで ${100 - pct}pt</div>`;
+}
+function award(pts){
+  if(S.todayPts.date !== today()) S.todayPts = {date: today(), pts: 0};
+  const before = rank(S.points);
+  S.points += pts; S.todayPts.pts += pts; save(); renderPoints();
+  if(rank(S.points) > before) toast(`🎉 ランクアップ！ Lv ${rank(S.points)}`);
+}
 
 // ---------- 自動取得（辞書 + 日本語訳） ----------
 async function getJSON(url, ms = 7000){
@@ -158,15 +202,19 @@ function pickDef(entries){
 }
 async function lookup(word){
   const out = {word, ja:'', pos:'', def:'', example:'', exJa:'', phonetic:''};
-  const [dict, tr] = await Promise.allSettled([
+  const bl = builtinLevel(word);
+  const [dict, tr, est] = await Promise.allSettled([
     getJSON('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word)),
-    getJSON('https://api.mymemory.translated.net/get?langpair=en|ja&q=' + encodeURIComponent(word))
+    getJSON('https://api.mymemory.translated.net/get?langpair=en|ja&q=' + encodeURIComponent(word)),
+    bl ? null : estimateLevel(word)
   ]);
   if(dict.status === 'fulfilled' && Array.isArray(dict.value)) Object.assign(out, pickDef(dict.value));
   if(tr.status === 'fulfilled' && tr.value?.responseData?.translatedText){
     const t = tr.value.responseData.translatedText;
     if(t.toLowerCase() !== word.toLowerCase()) out.ja = t;
   }
+  const e = est.status === 'fulfilled' ? est.value : null;
+  out.lv = bl || e || 2; out.lvSet = bl != null || e != null;
   out.found = !!(out.def || out.ja);
   return out;
 }
@@ -178,10 +226,12 @@ async function refill(w){
     w.example = info.example; w.def = info.def; w.pos = info.pos || w.pos;
   }
   for(const k of ['ja','def','pos','phonetic']) if(!w[k] && info[k]) w[k] = info[k];
+  w.lvTried = true;
+  if(!w.lvSet && info.lvSet){ w.lv = info.lv; w.lvSet = true; }
   save();
   return w.def ? 'ok' : 'none';
 }
-const lacking = () => S.words.filter(w => !w.def);
+const lacking = () => S.words.filter(w => !w.def || (!w.lvSet && !w.lvTried));
 
 async function addWords(list, {silent} = {}){
   const have = new Set(S.words.map(w => w.word));
@@ -247,16 +297,18 @@ $('#randBtn').onclick = async () => {
 // ---------- 一覧 ----------
 function renderList(){
   const q = $('#search').value.trim().toLowerCase();
-  const items = S.words.filter(w => !q || w.word.includes(q) || (w.ja||'').includes(q));
+  $('#lvList').innerHTML = lvChips();
+  const items = S.words.filter(w => (!LVF || lvOf(w) === LVF) && (!q || w.word.includes(q) || (w.ja||'').includes(q)));
   $('#count').textContent = `${items.length} / ${S.words.length} 語`;
   const n = lacking().length, ra = $('#refillAll');
-  ra.textContent = `辞書情報が足りない単語を再取得（${n}語）`; ra.disabled = !n;
+  ra.textContent = `足りない情報（定義・レベル）を再取得（${n}語）`; ra.disabled = !n;
   $('#listBox').innerHTML = items.map(w => `
     <div class="card"><div class="word"><div>
-      <h3>${esc(w.word)} <span class="sub">${esc(w.phonetic)}</span><span class="tag">${esc(w.pos)}</span></h3>
+      <h3>${esc(w.word)} <span class="sub">${esc(w.phonetic)}</span><span class="tag">${esc(w.pos)}</span>${lvTag(w)}</h3>
       <div>${esc(w.ja)}</div>
       <div class="sub">${esc(w.def)}</div>
       ${w.example ? `<div class="sub"><i>“${esc(w.example)}”</i>${w.exJa ? '<br>' + esc(w.exJa) : ''}</div>` : ''}
+      <div class="sub">習熟 ${'★'.repeat(w.box || 0)}${'☆'.repeat(5 - (w.box || 0))}　レベル <select data-lvsel="${esc(w.word)}">${[1,2,3].map(i => `<option value="${i}" ${lvOf(w) === i ? 'selected' : ''}>${LV_NAME[i]}</option>`).join('')}</select></div>
     </div>
     <div><button class="del" data-say="${esc(w.word)}" title="発音">🔊</button><button class="del" data-fill="${esc(w.word)}" title="情報を再取得">🔄</button><button class="del" data-del="${esc(w.word)}" title="削除">✕</button></div></div></div>`).join('')
     || '<p class="sub">まだ単語がありません。「追加」タブから登録しましょう。</p>';
@@ -279,26 +331,31 @@ $('#listBox').onclick = e => {
   }
   if(e.target.dataset.del){ S.words = S.words.filter(w => w.word !== e.target.dataset.del); save(); renderList(); }
 };
+$('#listBox').onchange = e => {
+  const k = e.target.dataset.lvsel; if(!k) return;
+  const w = S.words.find(x => x.word === k); w.lv = +e.target.value; w.lvSet = true; save(); renderList();
+};
 function say(t){ try{ const u = new SpeechSynthesisUtterance(t); u.lang = 'en-US'; speechSynthesis.cancel(); speechSynthesis.speak(u); }catch(e){} }
 
 // ---------- 学習（ライトナー式の簡易間隔反復） ----------
 const INTERVALS = [0, 1, 3, 7, 14, 30];
 let cur = null, shown = false;
-function nextDue(){ const t = today(); return S.words.filter(w => w.due <= t).sort((a,b) => a.due.localeCompare(b.due) || a.box - b.box)[0]; }
+function nextDue(){ const t = today(); return S.words.filter(w => w.due <= t && (!LVF || lvOf(w) === LVF)).sort((a,b) => a.due.localeCompare(b.due) || a.box - b.box)[0]; }
 function renderStudy(){
   cur = nextDue();
-  const box = $('#studyBox');
+  const box = $('#studyBox'), t = today(), head = lvChips();
   if(!S.words.length){ box.innerHTML = '<div class="card">単語がありません。先に追加してください。</div>'; return; }
-  if(!cur){ box.innerHTML = '<div class="card">🎉 今日の復習は完了です！</div>'; return; }
-  const due = S.words.filter(w => w.due <= today()).length;
-  box.innerHTML = `<p class="sub">今日の残り ${due} 語</p>
-    <div class="card flash" id="flash">${shown ? back(cur) : `<div class="big">${esc(cur.word)}</div><div class="sub">${esc(cur.phonetic)}</div><div class="sub" style="margin-top:12px">タップして答えを見る</div>`}</div>
+  if(!cur){ box.innerHTML = head + '<div class="card">🎉 このレベルの今日の復習は完了です！</div>'; return; }
+  const due = S.words.filter(w => w.due <= t && (!LVF || lvOf(w) === LVF)).length;
+  box.innerHTML = head + `<p class="sub">今日の残り ${due} 語（覚えたら +${lvPts(cur) / 2}pt）</p>
+    <div class="card flash" id="flash">${shown ? back(cur) : `<div class="big">${esc(cur.word)}</div><div class="sub">${esc(cur.phonetic)} ${lvTag(cur)}</div><div class="sub" style="margin-top:12px">タップして答えを見る</div>`}</div>
     <div class="row ${shown?'':'hidden'}" style="justify-content:center"><button class="btn sec" id="ng">もう一度</button><button class="btn" id="ok">覚えた</button></div>`;
   $('#flash').onclick = () => { if(!shown){ shown = true; say(cur.word); renderStudy(); } };
   if(shown){ $('#ok').onclick = () => grade(true); $('#ng').onclick = () => grade(false); }
 }
-function back(w){ return `<div class="big">${esc(w.ja || w.word)}</div><div class="sub">${esc(w.word)} ${esc(w.phonetic)} <span class="tag">${esc(w.pos)}</span></div><div style="margin-top:8px">${esc(w.def)}</div>${w.example?`<div class="sub"><i>“${esc(w.example)}”</i>${w.exJa?'<br>'+esc(w.exJa):''}</div>`:''}`; }
+function back(w){ return `<div class="big">${esc(w.ja || w.word)}</div><div class="sub">${esc(w.word)} ${esc(w.phonetic)} <span class="tag">${esc(w.pos)}</span>${lvTag(w)}</div><div style="margin-top:8px">${esc(w.def)}</div>${w.example?`<div class="sub"><i>“${esc(w.example)}”</i>${w.exJa?'<br>'+esc(w.exJa):''}</div>`:''}`; }
 function grade(ok){
+  if(ok){ const p = lvPts(cur) / 2; toast(`+${p}pt`); award(p); }
   cur.seen++;
   cur.box = ok ? Math.min(cur.box + 1, INTERVALS.length - 1) : 0;
   const d = new Date(); d.setDate(d.getDate() + INTERVALS[cur.box]);
@@ -313,14 +370,14 @@ function grade(ok){
 // ---------- クイズ（4択 / スペル） ----------
 let Q = null;
 const shuffle = a => { a = [...a]; for(let i = a.length-1; i > 0; i--){ const j = Math.floor(Math.random()*(i+1)); [a[i],a[j]] = [a[j],a[i]]; } return a; };
-const quizPool = () => S.words.filter(w => w.ja);
+const quizPool = () => S.words.filter(w => w.ja && (!LVF || lvOf(w) === LVF));
 function quizMenu(){
   Q = null;
-  const n = quizPool().length;
-  $('#quizBox').innerHTML = `<div class="card"><b>クイズ</b><p class="sub">日本語訳のある ${n} 語から10問出題します。間違えた単語は復習対象に戻ります。</p>
-    <div class="row"><button class="btn" data-q="choice" ${n<4?'disabled':''}>4択クイズ</button>
-    <button class="btn" data-q="spell" ${n<1?'disabled':''}>スペルテスト</button></div>
-    ${n<4?'<p class="sub">4択は4語以上登録すると遊べます。</p>':''}</div>`;
+  const n = quizPool().length, allJa = S.words.filter(w => w.ja).length;
+  $('#quizBox').innerHTML = lvChips() + `<div class="card"><b>クイズ</b><p class="sub">${LVF ? LV_NAME[LVF] : '全レベル'}の ${n} 語から10問出題します。正解するとポイントが貯まります（初級10pt・中級20pt・上級30pt。スペルテストは2倍、3連続正解からは +5pt、全問正解ボーナス +20pt）。間違えた単語は復習対象に戻ります。</p>
+    <div class="row"><button class="btn" data-q="choice" ${n < 1 || allJa < 4 ? 'disabled' : ''}>4択クイズ</button>
+    <button class="btn" data-q="spell" ${n < 1 ? 'disabled' : ''}>スペルテスト</button></div>
+    ${allJa < 4 ? '<p class="sub">4択は日本語訳のある単語が4語以上必要です。</p>' : ''}${n < 1 ? '<p class="sub">このレベルの単語がありません。</p>' : ''}</div>`;
 }
 $('#quizBox').onclick = e => {
   const d = e.target.dataset;
@@ -334,35 +391,41 @@ $('#quizBox').addEventListener('keydown', e => {
   if(e.key === 'Enter' && e.target.id === 'spellIn'){ Q.done ? nextQ() : checkSpell(); }
 });
 function startQuiz(mode){
-  Q = {mode, qs: shuffle(quizPool()).slice(0, 10), i: 0, score: 0, done: false};
+  Q = {mode, qs: shuffle(quizPool()).slice(0, 10), i: 0, score: 0, done: false, streak: 0, pts: 0, bonus: false};
   renderQ();
 }
 function renderQ(){
   if(Q.i >= Q.qs.length){
-    $('#quizBox').innerHTML = `<div class="card flash" style="cursor:default"><div class="big">${Q.score} / ${Q.qs.length}</div><p>${Q.score===Q.qs.length?'完璧よ！':Q.score>=Q.qs.length*0.7?'なかなかやるじゃない':'復習しなさい'}</p>
+    const perfect = Q.score === Q.qs.length && Q.qs.length >= 5;
+    if(perfect && !Q.bonus){ Q.bonus = true; Q.pts += 20; award(20); }
+    $('#quizBox').innerHTML = `<div class="card flash" style="cursor:default"><div class="big">${Q.score} / ${Q.qs.length}</div><p>獲得 <b>${Q.pts} pt</b>${perfect ? '（全問正解ボーナス +20pt）' : ''}</p><p>${Q.score===Q.qs.length?'完璧よ！':Q.score>=Q.qs.length*0.7?'なかなかやるじゃない':'復習しなさい'}</p>
       <div class="row"><button class="btn" data-q="${Q.mode}">もう一度</button><button class="btn sec" data-menu="1">メニュー</button></div></div>`;
     return;
   }
   const w = Q.qs[Q.i]; Q.done = false;
-  const head = `<p class="sub">${Q.i+1} / ${Q.qs.length}　正解 ${Q.score}</p>`;
+  const head = `<p class="sub">${Q.i+1} / ${Q.qs.length}　正解 ${Q.score}　獲得 ${Q.pts}pt</p>`;
   if(Q.mode === 'choice'){
-    const others = shuffle(quizPool().filter(x => x.word !== w.word && x.ja !== w.ja)).slice(0, 3);
+    const others = shuffle(S.words.filter(x => x.ja && x.word !== w.word && x.ja !== w.ja)).slice(0, 3);
     Q.opts = shuffle([w, ...others]);
     $('#quizBox').innerHTML = head + `<div class="card"><div class="big" style="font-size:30px;font-weight:700">${esc(w.word)} <button class="del" data-say="${esc(w.word)}" onclick="say('${esc(w.word)}')">🔊</button></div>
-      <div class="sub">${esc(w.phonetic)}</div>${Q.opts.map((o,i) => `<button class="opt" data-opt="${i}">${esc(o.ja)}</button>`).join('')}<div id="fb"></div></div>`;
+      <div class="sub">${esc(w.phonetic)} ${lvTag(w)}</div>${Q.opts.map((o,i) => `<button class="opt" data-opt="${i}">${esc(o.ja)}</button>`).join('')}<div id="fb"></div></div>`;
   }else{
     const hint = w.word[0] + ' ' + '_ '.repeat(w.word.length - 1);
-    $('#quizBox').innerHTML = head + `<div class="card"><div style="font-size:26px;font-weight:700">${esc(w.ja)} <span class="tag">${esc(w.pos)}</span></div>
+    $('#quizBox').innerHTML = head + `<div class="card"><div style="font-size:26px;font-weight:700">${esc(w.ja)} <span class="tag">${esc(w.pos)}</span>${lvTag(w)}</div>
       <div class="sub">${esc(w.def)}</div><p class="sub" style="letter-spacing:2px">${hint} (${w.word.length}文字)</p>
       <div class="row"><input type="text" id="spellIn" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="英語で入力"><button class="btn" data-check="1">答える</button></div><div id="fb"></div></div>`;
     $('#spellIn').focus();
   }
 }
 function finishQ(ok, w){
-  Q.done = true; if(ok) Q.score++;
-  else { w.box = 0; w.due = today(); }
+  Q.done = true; let gain = 0;
+  if(ok){
+    Q.score++; Q.streak++;
+    gain = lvPts(w) * (Q.mode === 'spell' ? 2 : 1) + (Q.streak >= 3 ? 5 : 0);
+    Q.pts += gain; award(gain);
+  }else{ Q.streak = 0; w.box = 0; w.due = today(); }
   save();
-  $('#fb').innerHTML = `<p>${ok ? '✅ 正解！' : '❌ 正解は <b>' + esc(w.word) + '</b>'}</p><button class="btn" data-next="1">${Q.i+1 >= Q.qs.length ? '結果を見る' : '次へ'}</button>`;
+  $('#fb').innerHTML = `<p>${ok ? `✅ 正解！ <b>+${gain}pt</b>${Q.streak >= 3 ? `（${Q.streak}連続）` : ''}` : '❌ 正解は <b>' + esc(w.word) + '</b>'}</p><button class="btn" data-next="1">${Q.i+1 >= Q.qs.length ? '結果を見る' : '次へ'}</button>`;
   if(!ok || Q.mode === 'spell') say(w.word);
 }
 function answerChoice(i){
@@ -397,6 +460,7 @@ $('#file').onchange = async e => {
     if(!Array.isArray(d.words)) throw 0;
     const have = new Set(S.words.map(w => w.word));
     S.words.push(...d.words.filter(w => w && w.word && !have.has(w.word)));
+    S.points = Math.max(S.points, +d.points || 0); migrate(); renderPoints();
     save(); renderList(); toast('インポートしました');
   }catch(_){ toast('読み込めないファイルです'); }
   e.target.value = '';
@@ -404,8 +468,17 @@ $('#file').onchange = async e => {
 $('#resetBtn').onclick = () => { if(confirm('すべての単語を削除しますか？')){ S.words = []; save(); renderList(); } };
 
 // ---------- タブ ----------
+let curTab = 'add';
+document.addEventListener('click', e => { // レベルの絞り込み
+  const n = e.target.dataset && e.target.dataset.lv; if(n == null) return;
+  LVF = +n;
+  if(curTab === 'list') renderList();
+  if(curTab === 'study'){ shown = false; renderStudy(); }
+  if(curTab === 'quiz' && !Q) quizMenu();
+});
 $('#tabs').onclick = e => {
   const t = e.target.dataset.t; if(!t) return;
+  curTab = t;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b === e.target));
   ['add','study','quiz','list','settings'].forEach(k => $('#t-'+k).classList.toggle('hidden', k !== t));
   if(t === 'study'){ shown = false; renderStudy(); }
@@ -415,6 +488,12 @@ $('#tabs').onclick = e => {
 
 // ---------- 起動 ----------
 if('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(()=>{});
+// 保存済みの単語にレベルを付ける（内蔵リストは分類済み、それ以外は仮に「中級」）
+function migrate(){
+  S.words.forEach(w => { if(!w.lv){ const b = builtinLevel(w.word); w.lv = b || 2; w.lvSet = b != null; } });
+  save();
+}
+migrate(); renderPoints();
 $('#autoDaily').checked = S.settings.autoDaily;
 $('#dailyN').value = S.settings.dailyN;
 renderList();
